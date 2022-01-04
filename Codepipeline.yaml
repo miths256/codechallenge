@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Template to create codepipeline"
+
+Parameters:
+  PipelineName:
+        Type: String
+        Description: The CodePipeline Name
+        Default: pipeline-CloudFormation-2test
+  Stack:
+        Type: String
+        Description: The Cloudformation Stack Name
+        Default: ecs cluster
+  BucketName:
+        Type: String
+        Description: The bucket where artifacts will be stored.
+        Default: cftest-challenge05-f
+  PipelineRole:
+        Type: String
+        Description: The Cloudformation Deploy Role Name
+        Default: codepipeline-IAM2test
+  CFRole:
+        Type: String
+        Description: The CodePipeline Role Name
+        Default: codepipeline-cloudformation2test
+  Cloudwatchrole:
+        Type: String
+        Description: The Cloudwatch Events Role Name
+        Default: codepipeline-cwevents2test
+Resources:
+  S3:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+               SSEAlgorithm: AES256
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE
+      VersioningConfiguration:
+        Status: Enabled
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Ref BucketName
+
+  CodePipelineRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Description: The CodeBuild Validate CF Template Role
+      RoleName: !Ref PipelineRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - "codepipeline.amazonaws.com"
+            Action:
+              - 'sts:AssumeRole'            
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'iam:PassRole'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeCommitFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess
+        - arn:aws:iam::aws:policy/AWSCodeDeployFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Ref PipelineRole
+
+  CloudFormationRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Description: The CodeBuild Validate CF Template Role
+      RoleName: !Ref CFRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - "cloudformation.amazonaws.com"
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Ref CFRole
+
+  AmazonCloudWatchEventRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Description: The CodeBuild Validate CF Template Role
+      RoleName: !Ref Cloudwatchrole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - "events.amazonaws.com"
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - 'codepipeline:StartPipelineExecution'
+                Resource: !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref DeployPipeline ] ] 
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Ref Cloudwatchrole
+
+  AmazonCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - arn:aws:codecommit:eu-west-2:164416499376:lintcode
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - dev
+      Targets:
+        -
+          Arn: 
+            !Join [ '', [ 'arn:aws:codepipeline:', !Ref 'AWS::Region', ':', !Ref 'AWS::AccountId', ':', !Ref DeployPipeline ] ]
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: codepipeline-DeployPipeline
+
+  DeployPipeline: 
+    Type: AWS::CodePipeline::Pipeline 
+    Properties: 
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Name: !Ref PipelineName
+      ArtifactStore:
+          Location: !Ref S3
+          Type: S3
+      Stages: 
+        - 
+          Name: Source 
+          Actions: 
+            - 
+              Name: SourceAction
+              ActionTypeId: 
+                Category: Source 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeCommit 
+              OutputArtifacts: 
+                - 
+                  Name: SourceArtifact 
+              Configuration: 
+                RepositoryName: lintcode
+                BranchName: dev
+                PollForSourceChanges: false 
+              RunOrder: 1 
+        - 
+          Name: Build 
+          Actions: 
+            -
+              Name: BuildAction
+              InputArtifacts:
+                - Name: SourceArtifact   
+              ActionTypeId: 
+                Category: Build 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !ImportValue BuildProject
+                BatchEnabled: 'false'
+              OutputArtifacts: []
+              RunOrder: 1
+
+        - 
+          Name: Deploy 
+          Actions: 
+            - 
+              Name: DeployAction
+              InputArtifacts:
+                - Name: SourceArtifact
+              ActionTypeId: 
+                Category: Deploy 
+                Owner: AWS 
+                Version: 1
+                Provider: CloudFormation 
+              Configuration: 
+                ActionMode: CREATE_UPDATE
+                StackName: !Ref Stack
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                TemplatePath: "SourceArtifact::ecs.yml" 
+              RunOrder: 1  
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Ref PipelineName
